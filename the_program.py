@@ -6,11 +6,13 @@ import time
 # --- Constants ---
 WIDTH = 800
 HEIGHT = 600
-INITIAL_GOOBLETS = 25
-BERRY_COUNT = 35
+INITIAL_GOOBLETS = 24
+BERRY_COUNT = 30
 LAKE_COUNT = 5
-MUTATION_RATE = 0.15
-REPRODUCTION_HUNGER_THRESHOLD = 45
+MAX_GOOBLETS = 60
+MUTATION_RATE = 0.0
+REPRODUCTION_HUNGER_THRESHOLD = 1000
+EVOLUTION_ENABLED = False
 WANDER_CHANGE_CHANCE = 0.06
 COMBAT_DISTANCE = 15
 SICKNESS_DURATION = 60 # Seconds until death
@@ -30,6 +32,10 @@ def clamp_gooblet_to_world(gooblet):
     gooblet.x = max(min_x, min(max_x, gooblet.x))
     gooblet.y = max(min_y, min(max_y, gooblet.y))
 
+def can_add_gooblets(world, count=1):
+    return len(getattr(world, "gooblets", [])) + count <= MAX_GOOBLETS
+
+
 class Gooblet:
     def __init__(self, x, y, stats=None, generation=1):
         self.x = x
@@ -40,18 +46,25 @@ class Gooblet:
         self.is_sick = False
         self.sick_time = 0
         self.curing_progress = 0
+        # Small chance to have a different visual variant color (most are red)
+        self.variant_color = None
+        # if random.random() < 0.22:
+        self.variant_color = random.choice(["#119951", "#119951", "#119951", "#feb236", "#a6e22e", "#66d9ef", "#9b59b6", "#f39c12", "#1abc9c"])
+        # Track how long this gooblet has been continuously in non-toxic water
+        self.in_water_time = 0
         
         # Core Stats
         if stats:
-            self.speed = max(1, stats['speed'] + random.uniform(-MUTATION_RATE, MUTATION_RATE) * 2)
-            self.sight = max(20, stats['sight'] + random.uniform(-MUTATION_RATE, MUTATION_RATE) * 40)
-            self.smartness = max(0.1, min(1.0, stats['smartness'] + random.uniform(-MUTATION_RATE, MUTATION_RATE)))
-            self.strength = max(1, stats['strength'] + random.uniform(-MUTATION_RATE, MUTATION_RATE) * 5)
+            self.speed = max(1, stats['speed'])
+            self.sight = max(20, stats['sight'])
+            self.smartness = max(0.1, min(1.0, stats['smartness']))
+            self.strength = max(1, stats['strength'])
         else:
-            self.speed = random.uniform(2, 4)
-            self.sight = random.uniform(70, 130)
-            self.smartness = random.uniform(0.3, 0.6)
-            self.strength = random.uniform(5, 15)
+            # Stone Age starting stats: low speed, sight, smartness, and strength
+            self.speed = random.uniform(1.0, 1.8)
+            self.sight = random.uniform(20, 50)
+            self.smartness = random.uniform(0.05, 0.18)
+            self.strength = random.uniform(2, 5)
 
         # Survival Needs
         self.hunger = 20
@@ -72,10 +85,11 @@ class Gooblet:
         if hasattr(self, 'is_sick') and self.is_sick: 
             return "#a6e22e" # Sickly green
             
-        r = min(255, int((self.strength / 30) * 255))
-        g = min(255, int((self.sight / 400) * 255))
-        b = min(255, int((self.speed / 8) * 255))
-        return f'#{r:02x}{g:02x}{b:02x}'
+        # r = min(255, int((self.strength / 30) * 255))
+        # g = min(255, int((self.sight / 400) * 255))
+        # b = min(255, int((self.speed / 8) * 255))
+        # return f'#{r:02x}{g:02x}{b:02x}'
+        return self.variant_color if self.variant_color else "#EB0202"  # Default red
 
     def move(self, world):
         if not self.alive: return
@@ -104,7 +118,7 @@ class Gooblet:
         if self.hunger < 30 and self.thirst < 30 and self.health < 100 and not self.is_sick:
             self.health += 0.2
 
-        self.ready_to_mate = self.hunger < REPRODUCTION_HUNGER_THRESHOLD and self.thirst < REPRODUCTION_HUNGER_THRESHOLD and not self.is_sick
+        self.ready_to_mate = False
         self.in_combat = False
 
         # AI Decision Making
@@ -142,16 +156,40 @@ class Gooblet:
             self.y += math.sin(angle) * self.speed
             self.interact(world)
 
-        # Check for drowning
+        # Check for water effects
+        # Check for water effects (toxic water causes sickness; normal water can drown)
         if self.is_on_water(self.x, self.y, world.lakes):
-            if random.random() > self.smartness * 0.5:
-                self.alive = False
+            if self.is_on_toxic_water(self.x, self.y, world.lakes):
+                # Toxic water: chance to become sick immediately; reset drowning timer
+                self.in_water_time = 0
+                if not self.is_sick and random.random() < 0.75 * (1 - self.smartness * 0.2):
+                    self.is_sick = True
+                    self.sick_time = 0
+                    self.curing_progress = 0
+            else:
+                # Non-toxic water: increment drowning timer; smarter gooblets survive longer.
+                self.in_water_time += 1
+                # Convert smartness to extra tolerance: range [0..80] ticks
+                time_to_drown = int(40 + self.smartness * 80)
+                # Small immediate drowning chance each tick (to keep variance)
+                drown_prob = 0.05 + 0.45 * (1.0 - self.smartness)
+                if self.in_water_time >= time_to_drown or random.random() < drown_prob:
+                    self.alive = False
+        else:
+            # Not on water: reset drowning timer
+            self.in_water_time = 0
 
         clamp_gooblet_to_world(self)
 
     def is_on_water(self, x, y, lakes):
         for l in lakes:
             if math.hypot(l[0] - x, l[1] - y) < l[2] - 5:
+                return True
+        return False
+
+    def is_on_toxic_water(self, x, y, lakes):
+        for l in lakes:
+            if l[3] == "toxic" and math.hypot(l[0] - x, l[1] - y) < l[2] - 5:
                 return True
         return False
 
@@ -199,6 +237,47 @@ class Gooblet:
                             self.curing_progress = 0
                     break
 
+    def find_nearest_decoration(self, decorations, kind, radius):
+        nearest = None
+        min_dist = radius
+        for obj in decorations:
+            if obj.kind != kind:
+                continue
+            d = math.hypot(obj.x - self.x, obj.y - self.y)
+            if d < min_dist:
+                min_dist = d
+                nearest = obj
+        return nearest
+
+    def gather_resources(self, world, stage):
+        if not hasattr(world, "decorations"):
+            return
+
+        # Prefer to gather trees in early ages, then rocks for metal.
+        tree = self.find_nearest_decoration(world.decorations, "tree", 16)
+        rock = self.find_nearest_decoration(world.decorations, "rock", 16)
+
+        if tree and stage in ("Stone Age", "Bronze Age", "Medieval Age"):
+            world.resources["wood"] += random.randint(2, 5)
+            world.decorations.remove(tree)
+            self.state = "chopping_tree"
+            return
+
+        if rock:
+            if stage == "Stone Age":
+                world.resources["stone"] += random.randint(1, 3)
+                self.state = "collecting_rock"
+            elif stage == "Bronze Age":
+                world.resources["stone"] += random.randint(2, 4)
+                self.state = "mining_bronze"
+            elif stage == "Industrial Age":
+                world.resources["iron"] += random.randint(1, 2)
+                self.state = "mining_iron"
+            else:
+                world.resources["iron"] += random.randint(1, 3)
+                self.state = "mining_modern"
+            world.decorations.remove(rock)
+
 class SimulationWorld:
     def __init__(self, root):
         self.root = root
@@ -213,8 +292,25 @@ class SimulationWorld:
         tk.Label(self.info_panel, text="Gooblet Evolution", font=("Arial", 14, "bold"), bg="#eee8d5").pack(pady=5)
         self.stats_label = tk.Label(self.info_panel, text="Click a Gooblet", font=("Arial", 10), justify=tk.LEFT, bg="#eee8d5")
         self.stats_label.pack(anchor="nw", pady=10)
-        self.gen_label = tk.Label(self.info_panel, text="Gen: 1 | Pop: 0", font=("Arial", 10, "bold"), bg="#eee8d5")
-        self.gen_label.pack(anchor="nw")
+        self.gen_label = tk.Text(self.info_panel, height=14, width=28, bg="#f4efe2", wrap="word", relief="flat")
+        self.gen_label.pack(anchor="nw", pady=(0, 6))
+        self.gen_label.configure(state="disabled")
+        self.stage_label = tk.Label(self.info_panel, text="Stage: Stone Age", font=("Arial", 10), bg="#eee8d5")
+        self.stage_label.pack(anchor="nw")
+        self.count_label = tk.Label(self.info_panel, text="Trees: 0 | Rocks: 0", font=("Arial", 10), bg="#eee8d5")
+        self.count_label.pack(anchor="nw", pady=(4, 8))
+        self.resource_label = tk.Label(self.info_panel, text="Wood: 0 Stone: 0\nBronze: 0 Iron: 0", font=("Arial", 9), justify=tk.LEFT, bg="#eee8d5")
+        self.resource_label.pack(anchor="nw", pady=(0, 8))
+
+        tk.Label(self.info_panel, text="Seed:", font=("Arial", 9, "bold"), bg="#eee8d5").pack(anchor="nw")
+        self.seed_var = tk.StringVar(value="")
+        self.seed_entry = tk.Entry(self.info_panel, textvariable=self.seed_var)
+        self.seed_entry.pack(fill=tk.X, pady=(2, 6))
+        self.seed_entry.bind("<Return>", lambda _event: self.start_new_simulation())
+        self.seed_status_label = tk.Label(self.info_panel, text="Seed: random", font=("Arial", 9), bg="#eee8d5")
+        self.seed_status_label.pack(anchor="nw", pady=(0, 4))
+        self.btn_new_sim = tk.Button(self.info_panel, text="Start New Simulation", command=self.start_new_simulation)
+        self.btn_new_sim.pack(fill=tk.X, pady=(0, 8))
         self.btn_toggle = tk.Button(self.info_panel, text="Pause Simulation", command=self.toggle_running)
         self.btn_toggle.pack(fill=tk.X, pady=10)
 
@@ -233,8 +329,33 @@ class SimulationWorld:
         self.berries = []
         self.spawn_berries(BERRY_COUNT)
         self.gooblets = [Gooblet(random.randint(0, WIDTH), random.randint(0, HEIGHT)) for _ in range(INITIAL_GOOBLETS)]
+        self.resources = {
+            "wood": 0,
+            "stone": 0,
+            "bronze": 0,
+            "iron": 0,
+            "tool": 0,
+            "tent": 0,
+            "fire": 0,
+            "house": 0,
+            "cannon": 0,
+            "musket": 0,
+            "phone": 0,
+            "pistol": 0,
+            "machine_gun": 0,
+        }
+        self.stage = "Stone Age"
+        self.resource_respawn_tick = 0
         self.selected_gooblet = None
+        self.last_population_count = len(self.gooblets)
+        self.shift_down = False
+        self.ctrl_down = False
+        self.time_multiplier = 1.0
+        self.base_update_delay = 40
+        self.last_draw_time = 0.0
+        self.last_stats_update = 0.0
         self.canvas.bind("<Button-1>", self.on_click)
+        self.bind_time_controls()
         self.running = True
         self.update()
 
@@ -246,6 +367,35 @@ class SimulationWorld:
                 if not any(math.hypot(bx - l[0], by - l[1]) < l[2] + 5 for l in self.lakes):
                     self.berries.append([bx, by])
                     break
+
+    def can_place_decoration(self, x, y, radius):
+        if any(math.hypot(x - lx, y - ly) < (lr + radius + 4) for lx, ly, lr, _ in self.lakes):
+            return False
+        for obj in getattr(self, "decorations", []):
+            other_r = 12 if obj.kind == "tree" else 7 if obj.kind == "rock" else 6
+            if math.hypot(x - obj.x, y - obj.y) < (radius + other_r + 2):
+                return False
+        return True
+
+    def spawn_decoration(self, kind, count=1):
+        radius = 12 if kind == "tree" else 7 if kind == "rock" else 12 if kind == "house" else 6
+        for _ in range(count):
+            attempts = 0
+            while attempts < 300:
+                attempts += 1
+                x = random.randint(20, WIDTH - 20)
+                y = random.randint(20, HEIGHT - 20)
+                if self.can_place_decoration(x, y, radius):
+                    self.decorations.append(WorldObject(x, y, kind))
+                    break
+
+    def respawn_resources(self):
+        tree_count = len([d for d in self.decorations if d.kind == 'tree'])
+        rock_count = len([d for d in self.decorations if d.kind == 'rock'])
+        if tree_count < 40:
+            self.spawn_decoration("tree")
+        if rock_count < 35:
+            self.spawn_decoration("rock")
 
     def screen_to_world(self, x, y):
         sx = self.visual_scale_x if self.visual_scale_x > 0 else 1.0
@@ -260,42 +410,186 @@ class SimulationWorld:
                 self.selected_gooblet = g
                 break
 
+    def bind_time_controls(self):
+        self.root.bind_all("<KeyPress-Shift_L>", self.on_shift_press)
+        self.root.bind_all("<KeyRelease-Shift_L>", self.on_shift_release)
+        self.root.bind_all("<KeyPress-Shift_R>", self.on_shift_press)
+        self.root.bind_all("<KeyRelease-Shift_R>", self.on_shift_release)
+        self.root.bind_all("<KeyPress-Control_L>", self.on_ctrl_press)
+        self.root.bind_all("<KeyRelease-Control_L>", self.on_ctrl_release)
+        self.root.bind_all("<KeyPress-Control_R>", self.on_ctrl_press)
+        self.root.bind_all("<KeyRelease-Control_R>", self.on_ctrl_release)
+
+    def on_shift_press(self, event):
+        self.shift_down = True
+        self.update_time_multiplier()
+
+    def on_shift_release(self, event):
+        self.shift_down = False
+        self.update_time_multiplier()
+
+    def on_ctrl_press(self, event):
+        self.ctrl_down = True
+        self.update_time_multiplier()
+
+    def on_ctrl_release(self, event):
+        self.ctrl_down = False
+        self.update_time_multiplier()
+
+    def update_time_multiplier(self):
+        if self.shift_down and not self.ctrl_down:
+            self.time_multiplier = 3.0
+        elif self.ctrl_down and not self.shift_down:
+            self.time_multiplier = 0.4
+        else:
+            self.time_multiplier = 1.0
+
     def toggle_running(self):
         self.running = not self.running
         self.btn_toggle.config(text="Pause Simulation" if self.running else "Start Simulation")
-        if self.running: self.update()
+        if self.running:
+            self.refresh_overview()
+            self.update()
+        else:
+            self.refresh_overview()
+
+    def refresh_overview(self):
+        if not hasattr(self, "gen_label"):
+            return
+
+        if self.gooblets:
+            avg_gen = sum(g.generation for g in self.gooblets) / len(self.gooblets)
+            avg_smartness = sum(g.smartness for g in self.gooblets) / len(self.gooblets)
+        else:
+            avg_gen = 0.0
+            avg_smartness = 0.0
+
+        lines = [
+            f"Population: {len(self.gooblets)}",
+            f"Avg Gen: {avg_gen:.1f}",
+            f"Avg Smart: {avg_smartness:.2f}",
+            "",
+            "All gooblets:",
+        ]
+
+        if self.gooblets:
+            for index, g in enumerate(self.gooblets, 1):
+                lines.append(f"{index}. G{g.generation} S{g.smartness:.2f}")
+        else:
+            lines.append("None")
+
+        self.gen_label.configure(state="normal")
+        self.gen_label.delete("1.0", tk.END)
+        self.gen_label.insert("1.0", "\n".join(lines))
+        self.gen_label.configure(state="disabled")
+        self.last_population_count = len(self.gooblets)
+
+    def start_new_simulation(self):
+        seed_text = self.seed_var.get().strip()
+        if seed_text:
+            try:
+                seed_value = int(seed_text)
+            except ValueError:
+                seed_value = seed_text
+        else:
+            seed_value = None
+        self.reset_simulation(seed_value=seed_value)
+
+    def reset_simulation(self, seed_value=None):
+        self.running = False
+        self.selected_gooblet = None
+        self.shift_down = False
+        self.ctrl_down = False
+        self.time_multiplier = 1.0
+        self.base_update_delay = 40
+        self.last_draw_time = 0.0
+        self.last_stats_update = 0.0
+        self.canvas.delete("all")
+
+        global cure_discovered, cure_location
+        cure_discovered = False
+        cure_location = None
+
+        if seed_value is None:
+            random.seed()
+        else:
+            random.seed(seed_value)
+
+        self.current_seed = seed_value
+        self.seed_status_label.config(text=f"Seed: {seed_value if seed_value is not None else 'random'}")
+
+        self.lakes = []
+        toxic_lake_index = random.randrange(LAKE_COUNT)
+        for i in range(LAKE_COUNT):
+            while True:
+                lx = random.randint(60, WIDTH-60)
+                ly = random.randint(60, HEIGHT-60)
+                lr = random.randint(30, 55)
+                if all(math.hypot(lx - ol[0], ly - ol[1]) > (lr + ol[2] + 20) for ol in self.lakes):
+                    ltype = "toxic" if i == toxic_lake_index else "clean"
+                    self.lakes.append([lx, ly, lr, ltype])
+                    break
+
+        self.berries = []
+        self.spawn_berries(BERRY_COUNT)
+        self.gooblets = [Gooblet(random.randint(0, WIDTH), random.randint(0, HEIGHT)) for _ in range(INITIAL_GOOBLETS)]
+        self.resources = {
+            "wood": 0,
+            "stone": 0,
+            "bronze": 0,
+            "iron": 0,
+            "tool": 0,
+            "tent": 0,
+            "fire": 0,
+            "house": 0,
+            "cannon": 0,
+            "musket": 0,
+            "phone": 0,
+            "pistol": 0,
+            "machine_gun": 0,
+        }
+        self.decorations = []
+        self.berry_bushes = []
+        self.grass = []
+        self.flower_patches = []
+        self.forest_centers = []
+        self.stage = "Stone Age"
+        self.resource_respawn_tick = 0
+        self.generate_decorations()
+
+        self.btn_toggle.config(text="Pause Simulation")
+        self.stats_label.config(text="Click a Gooblet\nto see stats")
+        self.refresh_overview()
+        self.stage_label.config(text="Stage: Stone Age")
+        self.count_label.config(text="Trees: 0 | Rocks: 0")
+        self.resource_label.config(text="Wood: 0 Stone: 0\nBronze: 0 Iron: 0")
+        self.running = True
+        self.draw()
+        self.update()
 
     def update(self):
         if not self.running: return
-        if len(self.berries) < BERRY_COUNT and random.random() < 0.1:
+
+        if len(self.berries) < BERRY_COUNT and random.random() < 0.05:
             self.spawn_berries(1)
 
         new_borns = []
-        ready_mates = [g for g in self.gooblets if g.ready_to_mate]
-        random.shuffle(ready_mates)
-        while len(ready_mates) >= 2:
-            p1 = ready_mates.pop(); p2 = ready_mates.pop()
-            if math.hypot(p1.x - p2.x, p1.y - p2.y) < 35:
-                child_stats = {
-                    'speed': (p1.speed + p2.speed) / 2,
-                    'sight': (p1.sight + p2.sight) / 2,
-                    'smartness': (p1.smartness + p2.smartness) / 2,
-                    'strength': (p1.strength + p2.strength) / 2
-                }
-                child = Gooblet((p1.x + p2.x)/2, (p1.y + p2.y)/2, stats=child_stats, generation=max(p1.generation, p2.generation) + 1)
-                new_borns.append(child)
-                p1.hunger += 25; p2.hunger += 25
-                p1.ready_to_mate = False; p2.ready_to_mate = False
 
         for g in self.gooblets[:]:
             g.move(self)
             if not g.alive:
                 if g == self.selected_gooblet: self.selected_gooblet = None
                 self.gooblets.remove(g)
-        
-        self.gooblets.extend(new_borns)
-        self.draw()
-        
+
+        if len(self.gooblets) != self.last_population_count:
+            self.refresh_overview()
+
+        now = time.time()
+        should_draw = now - self.last_draw_time >= 0.05
+        if should_draw:
+            self.draw()
+            self.last_draw_time = now
+
         if self.selected_gooblet:
             g = self.selected_gooblet
             sick_status = f"\nSICK: {int(SICKNESS_DURATION - g.sick_time)}s left" if g.is_sick else ""
@@ -303,10 +597,12 @@ class SimulationWorld:
             self.stats_label.config(text=status)
         else:
             self.stats_label.config(text="Click a Gooblet\nto see stats")
-            
-        avg_gen = sum(g.generation for g in self.gooblets) / len(self.gooblets) if self.gooblets else 0
-        self.gen_label.config(text=f"Avg Gen: {avg_gen:.1f}\nPop: {len(self.gooblets)}")
-        self.root.after(30, self.update)
+
+        if now - self.last_stats_update >= 1.0 and len(self.gooblets) != self.last_population_count:
+            self.refresh_overview()
+            self.last_stats_update = now
+
+        self.root.after(16, self.update)
 
     def draw(self):
         self.canvas.delete("all")
@@ -506,6 +802,35 @@ def _draw_with_decorations(self):
                 outline=""
             )
 
+        elif obj.kind == "house":
+
+            self.canvas.create_rectangle(
+                obj.x-10,
+                obj.y-6,
+                obj.x+10,
+                obj.y+10,
+                fill="#deb887",
+                outline="#8b4513"
+            )
+            self.canvas.create_polygon(
+                obj.x-12,
+                obj.y-6,
+                obj.x+12,
+                obj.y-6,
+                obj.x,
+                obj.y-18,
+                fill="#a52a2a",
+                outline="#8b4513"
+            )
+            self.canvas.create_rectangle(
+                obj.x-4,
+                obj.y,
+                obj.x+4,
+                obj.y+6,
+                fill="#654321",
+                outline=""
+            )
+
 SimulationWorld.draw = _draw_with_decorations
 
 print("Expansion Part 1A Loaded")
@@ -564,20 +889,13 @@ _prev_update_for_berries = SimulationWorld.update
 
 def _update_plus(self, _prev=_prev_update_for_berries):
 
-    for bush in self.berry_bushes:
-
+    for bush in getattr(self, "berry_bushes", []):
         bush["timer"] += 1
-
         if bush["timer"] > 250:
-
             bush["timer"] = 0
-
             self.berries.append([
-
-                bush["x"] + random.randint(-12,12),
-
-                bush["y"] + random.randint(-12,12)
-
+                bush["x"] + random.randint(-12, 12),
+                bush["y"] + random.randint(-12, 12),
             ])
 
     _prev(self)
@@ -797,27 +1115,32 @@ def _draw_world(self):
 
     for cx,cy in self.flower_patches:
 
-        for _ in range(15):
+        for i in range(15):
 
-            px = cx + random.randint(-15,15)
-            py = cy + random.randint(-15,15)
+            angle = (i / 15.0) * 2 * math.pi
+            radius = 8 + (i % 5)
+            px = cx + int(math.cos(angle) * radius)
+            py = cy + int(math.sin(angle) * radius)
+            color = colors[i % len(colors)]
 
             self.canvas.create_oval(
                 px-2,
                 py-2,
                 px+2,
                 py+2,
-                fill=random.choice(colors),
+                fill=color,
                 outline=""
             )
 
     # Dense forests
     for fx,fy in self.forest_centers:
 
-        for _ in range(12):
+        for i in range(12):
 
-            tx = fx + random.randint(-35,35)
-            ty = fy + random.randint(-35,35)
+            angle = (i / 12.0) * 2 * math.pi
+            radius = 15 + (i % 4) * 5
+            tx = fx + int(math.cos(angle) * radius)
+            ty = fy + int(math.sin(angle) * radius)
 
             self.canvas.create_rectangle(
                 tx-2,
@@ -876,19 +1199,24 @@ def _update_stats(self):
 
     _old_update_stats(self)
 
-    if hasattr(self,"gen_label"):
-
-        self.gen_label.config(
-
-            text=self.gen_label.cget("text") +
-
-            f"\nTrees: {len([d for d in self.decorations if d.kind=='tree'])}"
-
-            f"\nRocks: {len([d for d in self.decorations if d.kind=='rock'])}"
-
-            f"\nBushes: {len(self.berry_bushes)}"
-
-        )
+    if hasattr(self, "gen_label"):
+        try:
+            self.gen_label.configure(state="normal")
+            current_text = self.gen_label.get("1.0", tk.END).rstrip()
+            extra_lines = [
+                f"Trees: {len([d for d in self.decorations if d.kind=='tree'])}",
+                f"Rocks: {len([d for d in self.decorations if d.kind=='rock'])}",
+                f"Bushes: {len(self.berry_bushes)}",
+            ]
+            if current_text:
+                updated_text = current_text + "\n" + "\n".join(extra_lines)
+            else:
+                updated_text = "\n".join(extra_lines)
+            self.gen_label.delete("1.0", tk.END)
+            self.gen_label.insert("1.0", updated_text)
+            self.gen_label.configure(state="disabled")
+        except Exception:
+            pass
 
 SimulationWorld.update = _update_stats
 
@@ -1428,30 +1756,29 @@ SimulationWorld.draw = _draw_cure
 # Cure research
 # ----------------------------
 
-_prev_update_for_cure_station = SimulationWorld.update
-
-def _update_cure_station(self, _prev=_prev_update_for_cure_station):
+def _update_cure_station_hook(world):
 
     global cure_discovered, cure_location
 
-    if (not cure_discovered) and len(self.gooblets):
+    if cure_discovered or not getattr(world, "gooblets", None):
+        return
 
-        avg_smart = sum(g.smartness for g in self.gooblets) / len(self.gooblets)
+    smartness_values = [getattr(g, "smartness", 0.0) for g in world.gooblets]
+    if not smartness_values:
+        return
 
-        if avg_smart >= SMARTNESS_STATION_THRESHOLD and random.random() < STATION_SPAWN_CHANCE:
+    avg_smart = sum(smartness_values) / len(smartness_values)
+    max_smart = max(smartness_values)
 
-            cure_discovered = True
+    if avg_smart >= SMARTNESS_STATION_THRESHOLD or max_smart >= SMARTNESS_STATION_THRESHOLD:
+        cure_discovered = True
+        cure_location = (
+            random.randint(40, WIDTH-40),
+            random.randint(40, HEIGHT-40)
+        )
+        print("A curing station has appeared!")
 
-            cure_location = (
-                random.randint(40, WIDTH-40),
-                random.randint(40, HEIGHT-40)
-            )
-
-            print("A curing station has appeared!")
-
-    _prev(self)
-
-SimulationWorld.update = _update_cure_station
+EXPANSION.add_update(_update_cure_station_hook)
 
 
 # ----------------------------
@@ -1508,19 +1835,167 @@ Gooblet.move = _move_cure
 
 print("Cure Research System Loaded")
 # ============================================================
-# LIGHT REPRODUCTION BOOST (Gentle Increase)
+# STATIC WORLD UPDATE (Gooblets only)
 # ============================================================
 
-print("Light Reproduction Boost Loaded")
+print("Static World Update Loaded")
 
-_original_update_repro = SimulationWorld.update
+def _static_world_update(self):
+    if not self.running:
+        return
 
-def _update_repro_light(self):
-    # Use a single reproduction pass from the base update chain.
-    _original_update_repro(self)
+    now = time.time()
+    should_draw = now - getattr(self, "last_draw_time", 0.0) >= 0.05
+    should_update_stats = now - getattr(self, "last_stats_update", 0.0) >= 0.25
 
-SimulationWorld.update = _update_repro_light
-# ============================================================
+    for bush in getattr(self, "berry_bushes", []):
+        bush["timer"] += 1
+        if bush["timer"] > 250:
+            bush["timer"] = 0
+            self.berries.append([
+                bush["x"] + random.randint(-12, 12),
+                bush["y"] + random.randint(-12, 12),
+            ])
+
+    if len(self.gooblets) == 0:
+        for _ in range(2):
+            while True:
+                x = random.randint(20, WIDTH-20)
+                y = random.randint(20, HEIGHT-20)
+                if not any(math.hypot(x - lx, y - ly) < l[2] + 5 for l in self.lakes):
+                    self.gooblets.append(Gooblet(x, y))
+                    break
+
+    new_borns = []
+
+    for g in self.gooblets[:]:
+        g.move(self)
+        if g.alive:
+            g.gather_resources(self, self.stage)
+        if not g.alive:
+            if g == self.selected_gooblet:
+                self.selected_gooblet = None
+            self.gooblets.remove(g)
+
+    if should_draw:
+        self.draw()
+        self.last_draw_time = now
+
+    if self.selected_gooblet:
+        g = self.selected_gooblet
+        sick_status = f"\nSICK: {int(SICKNESS_DURATION - g.sick_time)}s left" if g.is_sick else ""
+        status = (
+            f"ID: {id(g) % 1000}\nGen: {g.generation}\n\n"
+            f"Health: {int(g.health)}%\nSmart: {g.smartness:.2f}{sick_status}\n"
+            f"Strength: {g.strength:.1f}\nSpeed: {g.speed:.2f}\nSight: {g.sight:.1f}\n\n"
+            f"Hunger: {int(g.hunger)}%\nThirst: {int(g.thirst)}%\nState: {g.state}"
+        )
+        self.stats_label.config(text=status)
+    else:
+        self.stats_label.config(text="Click a Gooblet\nto see stats")
+
+    self.resource_respawn_tick += 1
+    if self.resource_respawn_tick >= 150:
+        self.resource_respawn_tick = 0
+        self.respawn_resources()
+
+    if should_update_stats:
+        avg_gen = sum(g.generation for g in self.gooblets) / len(self.gooblets) if self.gooblets else 0
+        avg_smartness = sum(g.smartness for g in self.gooblets) / len(self.gooblets) if self.gooblets else 0
+        self.gen_label.config(text=f"Avg Gen: {avg_gen:.1f}\nAvg Smart: {avg_smartness:.2f}\nPop: {len(self.gooblets)}")
+        self.last_stats_update = now
+
+    if self.gooblets:
+        avg_speed = sum(g.speed for g in self.gooblets) / len(self.gooblets)
+        avg_sight = sum(g.sight for g in self.gooblets) / len(self.gooblets)
+        avg_smartness = sum(g.smartness for g in self.gooblets) / len(self.gooblets)
+        avg_strength = sum(g.strength for g in self.gooblets) / len(self.gooblets)
+        evolution_score = (
+            (avg_speed / 5.0) +
+            (avg_sight / 130.0) +
+            avg_smartness +
+            (avg_strength / 15.0)
+        ) / 4.0
+        if evolution_score < 0.22:
+            stage = "Stone Age"
+        elif evolution_score < 0.38:
+            stage = "Bronze Age"
+        elif evolution_score < 0.56:
+            stage = "Medieval Age"
+        elif evolution_score < 0.74:
+            stage = "Industrial Age"
+        else:
+            stage = "Modern Age"
+    else: 
+        stage = "Stone Age"
+
+    self.stage = stage
+    self.stage_label.config(text=f"Stage: {stage}")
+
+    if stage == "Stone Age":
+        while self.resources["wood"] >= 10 and self.resources["stone"] >= 6:
+            self.resources["wood"] -= 10
+            self.resources["stone"] -= 6
+            self.resources["tent"] += 1
+        while self.resources["wood"] >= 6 and self.resources["stone"] >= 4:
+            self.resources["wood"] -= 6
+            self.resources["stone"] -= 4
+            self.resources["fire"] += 1
+        while self.resources["wood"] >= 4 and self.resources["stone"] >= 2:
+            self.resources["wood"] -= 4
+            self.resources["stone"] -= 2
+            self.resources["tool"] += 1
+    elif stage == "Bronze Age":
+        while self.resources["stone"] >= 3 and self.resources["bronze"] >= 2:
+            self.resources["stone"] -= 3
+            self.resources["bronze"] -= 2
+            self.resources["tool"] += 1
+        while self.resources["bronze"] >= 5 and self.resources["stone"] >= 4:
+            self.resources["bronze"] -= 5
+            self.resources["stone"] -= 4
+            self.resources["tent"] += 1
+    elif stage == "Industrial Age":
+        while self.resources["wood"] >= 10 and self.resources["stone"] >= 6:
+            self.resources["wood"] -= 10
+            self.resources["stone"] -= 6
+            self.resources["house"] += 1
+            self.spawn_decoration("house")
+        while self.resources["iron"] >= 5 and self.resources["stone"] >= 2:
+            self.resources["iron"] -= 5
+            self.resources["stone"] -= 2
+            self.resources["cannon"] += 1
+        while self.resources["iron"] >= 3:
+            self.resources["iron"] -= 3
+            self.resources["musket"] += 1
+    elif stage == "Modern Age":
+        while self.resources["iron"] >= 5 and self.resources["bronze"] >= 2:
+            self.resources["iron"] -= 5
+            self.resources["bronze"] -= 2
+            self.resources["machine_gun"] += 1
+        while self.resources["iron"] >= 2 and self.resources["wood"] >= 2:
+            self.resources["iron"] -= 2
+            self.resources["wood"] -= 2
+            self.resources["phone"] += 1
+        while self.resources["iron"] >= 2 and self.resources["bronze"] >= 1:
+            self.resources["iron"] -= 2
+            self.resources["bronze"] -= 1
+            self.resources["pistol"] += 1
+
+    if hasattr(self, "decorations"):
+        tree_count = len([d for d in self.decorations if d.kind == 'tree'])
+        rock_count = len([d for d in self.decorations if d.kind == 'rock'])
+        self.count_label.config(text=f"Trees: {tree_count} | Rocks: {rock_count}")
+    self.resource_label.config(
+        text=(
+            f"Wood: {self.resources['wood']} Stone: {self.resources['stone']}\n"
+            f"Bronze: {self.resources['bronze']} Iron: {self.resources['iron']}\n"
+            f"Tents: {self.resources['tent']} Fires: {self.resources['fire']} Tools: {self.resources['tool']}\n"
+            f"Houses: {self.resources['house']} Cannons: {self.resources['cannon']} Muskets: {self.resources['musket']}\n"
+            f"Phones: {self.resources['phone']} Pistols: {self.resources['pistol']} MGs: {self.resources['machine_gun']}"
+        )
+    )
+
+    delay = max(20, min(80, int(self.base_update_delay / self.time_multiplier)))
 # SPAWN GOOBLETS BY HOLDING S AND CLICKING
 # ============================================================
 
@@ -1543,23 +2018,27 @@ def _spawn_key_release(event):
 def _spawn_gooblet_click(world, event):
     global _spawn_s_down
 
-    # Only spawn on left click while S is held.
-    if _spawn_s_down and getattr(event, "num", 1) == 1:
+    # Spawn on left click while S is held, OR allow spawning by left-click
+    # when there are no gooblets alive so the user can repopulate the world.
+    if getattr(event, "num", 1) == 1 and (_spawn_s_down or not getattr(world, "gooblets", [])):
         x, y = world.screen_to_world(event.x, event.y)
         g = Gooblet(x, y)
         clamp_gooblet_to_world(g)
         world.gooblets.append(g)
+        # If no gooblets existed before, select the newly spawned one.
+        world.selected_gooblet = g
         print("Spawned Gooblet at", int(x), int(y))
 
 
 def _bind_spawn_keys(world):
-    # Track S key globally and hook canvas click directly for reliable spawning.
-    world.root.bind_all("<KeyPress-s>", _spawn_key_press)
-    world.root.bind_all("<KeyRelease-s>", _spawn_key_release)
-    world.root.bind_all("<KeyPress-S>", _spawn_key_press)
-    world.root.bind_all("<KeyRelease-S>", _spawn_key_release)
+    # Track S key globally and hook mouse clicks globally for reliable spawning.
+    world.root.bind_all("<KeyPress-s>", _spawn_key_press, add="+")
+    world.root.bind_all("<KeyRelease-s>", _spawn_key_release, add="+")
+    world.root.bind_all("<KeyPress-S>", _spawn_key_press, add="+")
+    world.root.bind_all("<KeyRelease-S>", _spawn_key_release, add="+")
+    world.root.bind_all("<Button-1>", lambda event, w=world: _spawn_gooblet_click(w, event), add="+")
     world.canvas.bind("<Button-1>", lambda event, w=world: _spawn_gooblet_click(w, event), add="+")
-    world.canvas.focus_set()
+    world.root.focus_set()
 
 
 EXPANSION.add_spawn(_bind_spawn_keys)
@@ -1570,24 +2049,10 @@ print("Spawn-On-Click (S Key) Loaded")
 # VISUAL CANVAS SCALING (RESIZE)
 # ============================================================
 
-_old_draw_visual_scale = SimulationWorld.draw
+# Disabled: scaling the canvas each frame caused visual jitter.
+# Keep the canvas size fixed and let Tkinter handle resizing naturally.
 
-
-def _draw_visual_scale(self):
-    _old_draw_visual_scale(self)
-
-    current_w = max(1, self.canvas.winfo_width())
-    current_h = max(1, self.canvas.winfo_height())
-
-    self.visual_scale_x = current_w / WIDTH
-    self.visual_scale_y = current_h / HEIGHT
-
-    self.canvas.scale("all", 0, 0, self.visual_scale_x, self.visual_scale_y)
-
-
-SimulationWorld.draw = _draw_visual_scale
-
-print("Visual Canvas Scaling Loaded")
+print("Visual Canvas Scaling Disabled to prevent jitter")
 
 
 if __name__ == "__main__":
