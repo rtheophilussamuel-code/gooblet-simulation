@@ -1,7 +1,7 @@
-import tkinter as tk
-import random
 import math
+import random
 import time
+import tkinter as tk
 
 # --- Constants ---
 WIDTH = 800
@@ -16,6 +16,91 @@ EVOLUTION_ENABLED = False
 WANDER_CHANGE_CHANCE = 0.06
 COMBAT_DISTANCE = 15
 SICKNESS_DURATION = 60 # Seconds until death
+COUNTRY_MIN_POPULATION = 3
+COUNTRY_DISTANCE = 65
+
+
+def find_country_groups(gooblets, distance=COUNTRY_DISTANCE, min_population=COUNTRY_MIN_POPULATION):
+    living = [gooblet for gooblet in gooblets if getattr(gooblet, "alive", True)]
+    unvisited = set(range(len(living)))
+    countries = []
+
+    while unvisited:
+        start = unvisited.pop()
+        group = [start]
+        pending = [start]
+
+        while pending:
+            current = pending.pop()
+            nearby = [
+                index for index in unvisited
+                if math.hypot(
+                    living[current].x - living[index].x,
+                    living[current].y - living[index].y,
+                ) <= distance
+            ]
+            for index in nearby:
+                unvisited.remove(index)
+                group.append(index)
+                pending.append(index)
+
+        if len(group) >= min_population:
+            countries.append([living[index] for index in group])
+
+    return countries
+
+
+def country_polygon_points(gooblets, padding=26):
+    min_x = min(gooblet.x for gooblet in gooblets)
+    max_x = max(gooblet.x for gooblet in gooblets)
+    min_y = min(gooblet.y for gooblet in gooblets)
+    max_y = max(gooblet.y for gooblet in gooblets)
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+    half_width = max((max_x - min_x) / 2 + padding, 42)
+    half_height = max((max_y - min_y) / 2 + padding, 34)
+
+    return (
+        center_x - half_width + 8, center_y - half_height,
+        center_x + half_width - 12, center_y - half_height + 3,
+        center_x + half_width, center_y - half_height + 14,
+        center_x + half_width - 4, center_y + half_height - 8,
+        center_x + half_width - 18, center_y + half_height,
+        center_x - half_width + 11, center_y + half_height - 2,
+        center_x - half_width, center_y + half_height - 14,
+        center_x - half_width + 3, center_y - half_height + 10,
+    )
+
+
+def draw_country_map(world):
+    countries = find_country_groups(world.gooblets)
+    world.countries = countries
+    colors = ("#e6cf83", "#a8c7a0", "#d9a58c", "#9ebbd1")
+
+    for index, country in enumerate(countries, 1):
+        center_x = sum(gooblet.x for gooblet in country) / len(country)
+        center_y = sum(gooblet.y for gooblet in country) / len(country)
+        world.canvas.create_polygon(
+            *country_polygon_points(country),
+            fill=colors[(index - 1) % len(colors)],
+            outline="#594a2d",
+            width=3,
+            smooth=True,
+            splinesteps=24,
+            stipple="gray50",
+            tags=("country_territory",),
+        )
+        world.canvas.create_text(
+            center_x,
+            center_y - 22,
+            text=f"COUNTRY {index}",
+            fill="#3b3020",
+            font=("Georgia", 10, "bold"),
+            tags=("country_label",),
+        )
+
+    if countries:
+        world.canvas.tag_lower("country_territory")
 
 def clamp_gooblet_to_world(gooblet):
     # Guard against invalid coordinates from chained movement patches.
@@ -2053,6 +2138,17 @@ print("Spawn-On-Click (S Key) Loaded")
 # Keep the canvas size fixed and let Tkinter handle resizing naturally.
 
 print("Visual Canvas Scaling Disabled to prevent jitter")
+
+
+_draw_before_countries = SimulationWorld.draw
+
+
+def _draw_with_countries(self):
+    _draw_before_countries(self)
+    draw_country_map(self)
+
+
+SimulationWorld.draw = _draw_with_countries
 
 
 if __name__ == "__main__":

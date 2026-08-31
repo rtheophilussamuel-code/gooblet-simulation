@@ -9,8 +9,64 @@ class DummyLabel:
 
 
 class DummyGooblet:
-    def __init__(self, smartness):
+    def __init__(self, smartness, x=0, y=0, alive=True):
         self.smartness = smartness
+        self.x = x
+        self.y = y
+        self.alive = alive
+
+
+class DummyCanvas:
+    def __init__(self):
+        self.polygons = []
+        self.text = []
+        self.lowered = []
+
+    def create_polygon(self, *points, **options):
+        self.polygons.append((points, options))
+
+    def create_text(self, *position, **options):
+        self.text.append((position, options))
+
+    def tag_lower(self, tag):
+        self.lowered.append(tag)
+
+
+def test_three_nearby_gooblets_form_country():
+    nearby = [DummyGooblet(0.2, x=index * 5, y=100) for index in range(3)]
+    isolated = DummyGooblet(0.2, x=500, y=500)
+
+    countries = tp.find_country_groups(nearby + [isolated])
+
+    assert len(countries) == 1
+    assert countries[0] == nearby
+
+
+def test_fewer_than_three_gooblets_do_not_form_country():
+    nearby = [DummyGooblet(0.2, x=index * 5, y=100) for index in range(2)]
+
+    assert tp.find_country_groups(nearby) == []
+
+
+def test_country_is_drawn_as_map_territory():
+    gooblets = [DummyGooblet(0.2, x=100 + index * 5, y=100) for index in range(3)]
+    world = types.SimpleNamespace(gooblets=gooblets, canvas=DummyCanvas())
+
+    tp.draw_country_map(world)
+
+    assert len(world.canvas.polygons) == 1
+    assert world.canvas.polygons[0][1]["tags"] == ("country_territory",)
+    assert world.canvas.text[0][1]["text"] == "COUNTRY 1"
+    assert world.canvas.lowered == ["country_territory"]
+
+
+def test_two_gooblets_do_not_draw_country_territory():
+    gooblets = [DummyGooblet(0.2, x=100 + index * 5, y=100) for index in range(2)]
+    world = types.SimpleNamespace(gooblets=gooblets, canvas=DummyCanvas())
+
+    tp.draw_country_map(world)
+
+    assert world.canvas.polygons == []
 
 
 def test_cure_station_triggered_by_smart_gooblet():
