@@ -6,13 +6,16 @@ import tkinter as tk
 # --- Constants ---
 WIDTH = 800
 HEIGHT = 600
-INITIAL_GOOBLETS = 24
-BERRY_COUNT = 30
+INITIAL_GOOBLETS = 30
+BERRY_COUNT = 50
 LAKE_COUNT = 5
-MAX_GOOBLETS = 60
-MUTATION_RATE = 0.0
-REPRODUCTION_HUNGER_THRESHOLD = 1000
+MAX_GOOBLETS = 100
+MUTATION_RATE = 0.5876543211234567898765432111234567898765432111111111112345678987654321234567898765432567654345676545654545435353475835349574937539857395873274095739573209573573295734952375943572395342798765432112345678987654321112345678987654321111111111123456789876543212345678987654325676543456765456545454353534758353495749375398573958732740957395732095735732957349523759435723953427
+REPRODUCTION_HUNGER_THRESHOLD = 20
 EVOLUTION_ENABLED = False
+WANDER_CHANGE_CHANCE = 0.606
+COMBAT_DISTANCE = 30
+SICKNESS_DURATION = 600 # Seconds until death
 WANDER_CHANGE_CHANCE = 0.06
 COMBAT_DISTANCE = 15
 SICKNESS_DURATION = 60 # Seconds until death
@@ -666,6 +669,53 @@ class SimulationWorld:
                 if g == self.selected_gooblet: self.selected_gooblet = None
                 self.gooblets.remove(g)
 
+        # Reproduction: nearby, not-too-hungry gooblets can make a baby.
+        # Child stats are averaged from parents; MUTATION_RATE may alter speed.
+        parents = self.gooblets[:]
+        paired = set()
+        for i, p1 in enumerate(parents):
+            if not p1.alive or p1.hunger > REPRODUCTION_HUNGER_THRESHOLD or p1 in paired:
+                continue
+            for p2 in parents[i+1:]:
+                if not p2.alive or p2.hunger > REPRODUCTION_HUNGER_THRESHOLD or p2 in paired:
+                    continue
+                # close enough to mate
+                if math.hypot(p1.x - p2.x, p1.y - p2.y) < 20 and len(self.gooblets) + len(new_borns) < MAX_GOOBLETS:
+                    cx = (p1.x + p2.x) / 2
+                    cy = (p1.y + p2.y) / 2
+                    child_stats = {
+                        'speed': (p1.speed + p2.speed) / 2.0,
+                        'sight': (p1.sight + p2.sight) / 2.0,
+                        'smartness': (p1.smartness + p2.smartness) / 2.0,
+                        'strength': (p1.strength + p2.strength) / 2.0,
+                    }
+
+                    # Mutation: chance to change the child's speed. 50/50 faster or slower by 10%.
+                    mutated = False
+                    mutation_kind = None
+                    if random.random() < MUTATION_RATE:
+                        mutated = True
+                        if random.random() < 0.5:
+                            child_stats['speed'] *= 1.10
+                            mutation_kind = 'faster'
+                        else:
+                            child_stats['speed'] *= 0.90
+                            mutation_kind = 'slower'
+                        child_stats['speed'] = max(0.1, child_stats['speed'])
+
+                    child = Gooblet(cx, cy, stats=child_stats, generation=max(p1.generation, p2.generation) + 1)
+                    # mark mutated babies so we can draw an icon
+                    child.mutated = mutated
+                    child.mutation_type = mutation_kind
+                    new_borns.append(child)
+
+                    # Small cost for parents and prevent immediate re-pairing
+                    p1.hunger = min(100, p1.hunger + 5)
+                    p2.hunger = min(100, p2.hunger + 5)
+                    paired.add(p1)
+                    paired.add(p2)
+                    break
+
         if len(self.gooblets) != self.last_population_count:
             self.refresh_overview()
 
@@ -700,6 +750,14 @@ class SimulationWorld:
             outline = "#b58900" if g.ready_to_mate else ("#cb4b16" if g.in_combat else ("black" if g == self.selected_gooblet else ""))
             width = 3 if (g == self.selected_gooblet or g.in_combat or g.ready_to_mate) else 1
             self.canvas.create_oval(g.x-g.radius, g.y-g.radius, g.x+g.radius, g.y+g.radius, fill=g.color, outline=outline, width=width)
+            # Show a small star icon above gooblets that were mutated at birth
+            if getattr(g, "mutated", False):
+                icon_color = "gold" if getattr(g, "mutation_type", None) == "faster" else "skyblue"
+                try:
+                    self.canvas.create_text(g.x, g.y - g.radius - 8, text="★", fill=icon_color, font=("Arial", 10, "bold"))
+                except Exception:
+                    # fallback to a small circle if the star glyph isn't available
+                    self.canvas.create_oval(g.x-3, g.y-g.radius-11, g.x+3, g.y-g.radius-5, fill=icon_color, outline="")
             if g == self.selected_gooblet:
                 self.canvas.create_oval(g.x-g.sight, g.y-g.sight, g.x+g.sight, g.y+g.sight, outline="#93a1a1", dash=(4, 4))
 
@@ -2140,6 +2198,7 @@ print("Spawn-On-Click (S Key) Loaded")
 print("Visual Canvas Scaling Disabled to prevent jitter")
 
 
+
 _draw_before_countries = SimulationWorld.draw
 
 
@@ -2152,6 +2211,7 @@ SimulationWorld.draw = _draw_with_countries
 
 
 if __name__ == "__main__":
+    print("game ran successfully")
     root = tk.Tk()
     root.title("Gooblet Evolution Simulator")
     sim = SimulationWorld(root)
